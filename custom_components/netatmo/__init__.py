@@ -94,6 +94,12 @@ async def async_setup(hass: HomeAssistant, config: dict):
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     """Set up Netatmo from a config entry."""
+    # For backwards compat, set unique ID
+    if entry.unique_id is None:
+        hass.config_entries.async_update_entry(entry, unique_id=DOMAIN)
+    elif ".local" in entry.unique_id:
+        hass.config_entries.async_update_entry(entry, unique_id=DOMAIN)
+    
     implementation = await config_entry_oauth2_flow.async_get_config_entry_implementation(
         hass, entry
     )
