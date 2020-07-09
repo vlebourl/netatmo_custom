@@ -6,7 +6,7 @@ import logging
 from time import time
 from typing import Dict, List
 
-from . import pyatmo
+import pyatmo
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
@@ -24,6 +24,7 @@ DATA_CLASSES = {
     "CameraData": pyatmo.CameraData,
     "HomeData": pyatmo.HomeData,
     "HomeStatus": pyatmo.HomeStatus,
+    "PublicData": pyatmo.PublicData,
 }
 
 MAX_CALLS_1H = 20
@@ -34,7 +35,7 @@ DEFAULT_INTERVALS = {
     "CameraData": 900,
     "WeatherStationData": 300,
     "HomeCoachData": 300,
-    "PublicData": 300,
+    "PublicData": 600,
 }
 SCAN_INTERVAL = 60
 
@@ -72,7 +73,7 @@ class NetatmoDataHandler:
 
         async def async_update(event_time):
             """Update device."""
-            queue = [entry for entry in self._queue[0:PARALLEL_CALLS]]
+            queue = self._queue[0:PARALLEL_CALLS]
             for _ in queue:
                 self._queue.append(self._queue.pop(0))
 
@@ -111,6 +112,8 @@ class NetatmoDataHandler:
         """Register data class."""
         if "home_id" in kwargs:
             data_class_entry = f"{data_class_name}-{kwargs['home_id']}"
+        elif "area_name" in kwargs:
+            data_class_entry = f"{data_class_name}-{kwargs.pop('area_name')}"
         else:
             data_class_entry = data_class_name
 
@@ -135,7 +138,7 @@ class NetatmoDataHandler:
                     _LOGGER.debug(err)
 
                 self._queue.append(self._data_classes[data_class_entry])
-                _LOGGER.debug("Data class %s added", data_class_name)
+                _LOGGER.debug("Data class %s added", data_class_entry)
 
             else:
                 self._data_classes[data_class_entry].update(
