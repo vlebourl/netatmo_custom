@@ -6,7 +6,7 @@ import logging
 from time import time
 from typing import Dict, List
 
-import pyatmo
+from . import pyatmo
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
