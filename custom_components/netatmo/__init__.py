@@ -3,7 +3,7 @@ import asyncio
 import logging
 import secrets
 
-import pyatmo
+from . import pyatmo
 import voluptuous as vol
 
 from homeassistant.components import cloud
