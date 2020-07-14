@@ -7,6 +7,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_registry import async_entries_for_device
 
+from .const import DOMAIN, MANUFACTURER, MODELS
 from .data_handler import NetatmoDataHandler
 
 _LOGGER = logging.getLogger(__name__)
