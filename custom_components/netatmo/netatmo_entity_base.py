@@ -98,3 +98,23 @@ class NetatmoBase(Entity):
     @property
     def _data(self):
         return self.data_handler.data[self._data_classes[0]["name"]]
+
+    @property
+    def unique_id(self):
+        """Return the unique ID of this entity."""
+        return self._unique_id
+
+    @property
+    def name(self):
+        """Return the name of this entity."""
+        return self._name
+
+    @property
+    def device_info(self):
+        """Return the device info for the sensor."""
+        return {
+            "identifiers": {(DOMAIN, self._id)},
+            "name": self._device_name,
+            "manufacturer": MANUFACTURER,
+            "model": MODELS[self._model],
+        }
