@@ -66,10 +66,10 @@ class NetatmoFlowHandler(
     async def async_step_user(self, user_input=None):
         """Handle a flow start."""
         await self.async_set_unique_id(DOMAIN)
-        
+
         if self.hass.config_entries.async_entries(DOMAIN):
-            return self.async_abort(reason="already_setup")
-        
+            return self.async_abort(reason="single_instance_allowed")
+
         return await super().async_step_user(user_input)
 
     async def async_step_homekit(self, homekit_info):
@@ -106,7 +106,7 @@ class NetatmoOptionsFlowHandler(config_entries.OptionsFlow):
                     user_input={CONF_NEW_AREA: new_client}
                 )
 
-            return await self._update_options()
+            return self._update_options()
 
         weather_areas = list(self.options[CONF_WEATHER_AREAS])
 
@@ -127,6 +127,7 @@ class NetatmoOptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None and CONF_NEW_AREA not in user_input:
 
             def fix_coordinates(user_input):
+                """Ensure coordinates have acceptable length for the Netatmo API."""
                 for coordinate in [CONF_LAT_NE, CONF_LAT_SW, CONF_LON_NE, CONF_LON_SW]:
                     if len(str(user_input[coordinate]).split(".")[1]) < 7:
                         user_input[coordinate] = user_input[coordinate] + 0.0000001
@@ -183,7 +184,7 @@ class NetatmoOptionsFlowHandler(config_entries.OptionsFlow):
 
         return self.async_show_form(step_id="public_weather", data_schema=data_schema)
 
-    async def _update_options(self):
+    def _update_options(self):
         """Update config entry options."""
         return self.async_create_entry(
             title="Netatmo Public Weather", data=self.options

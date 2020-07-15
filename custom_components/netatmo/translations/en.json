@@ -6,7 +6,7 @@
       }
     },
     "abort": {
-      "already_setup": "Already configured. Only a single configuration possible.",
+      "single_instance_allowed": "Already configured. Only a single configuration possible.",
       "authorize_url_timeout": "Timeout generating authorize URL.",
       "missing_configuration": "The component is not configured. Please follow the documentation."
     },
