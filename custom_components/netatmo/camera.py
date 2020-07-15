@@ -121,7 +121,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     return
 
 
-class NetatmoCamera(Camera, NetatmoBase):
+class NetatmoCamera(NetatmoBase, Camera):
     """Representation of a Netatmo camera."""
 
     def __init__(
@@ -129,7 +129,7 @@ class NetatmoCamera(Camera, NetatmoBase):
     ):
         """Set up for access to the Netatmo camera images."""
         Camera.__init__(self)
-        NetatmoBase.__init__(self, data_handler)
+        super().__init__(data_handler)
 
         self._data_classes.append({"name": data_class})
 
@@ -151,28 +151,28 @@ class NetatmoCamera(Camera, NetatmoBase):
         """Entity created."""
         await NetatmoBase.async_added_to_hass(self)
 
-        async def handle_event(event):
-            """Handle webhook events."""
-            data = event.data["data"]
+        self.hass.bus.async_listen("netatmo_event", self.handle_event)
 
-            if not data.get("event_type"):
-                return
+    async def handle_event(self, event):
+        """Handle webhook events."""
+        data = event.data["data"]
 
-            if not data.get("camera_id"):
-                return
+        if not data.get("event_type"):
+            return
 
-            if data["home_id"] == self._home_id and data["camera_id"] == self._id:
-                if data["push_type"] in ["NACamera-off", "NACamera-disconnection"]:
-                    self.is_streaming = False
-                    self._status = "off"
-                elif data["push_type"] in ["NACamera-on", "NACamera-connection"]:
-                    self.is_streaming = True
-                    self._status = "on"
+        if not data.get("camera_id"):
+            return
 
-                self.schedule_update_ha_state()
-                return
+        if data["home_id"] == self._home_id and data["camera_id"] == self._id:
+            if data["push_type"] in ["NACamera-off", "NACamera-disconnection"]:
+                self.is_streaming = False
+                self._status = "off"
+            elif data["push_type"] in ["NACamera-on", "NACamera-connection"]:
+                self.is_streaming = True
+                self._status = "on"
 
-        self.hass.bus.async_listen("netatmo_event", handle_event)
+            self.async_write_ha_state()
+            return
 
     def camera_image(self):
         """Return a still image response from the camera."""
@@ -257,11 +257,6 @@ class NetatmoCamera(Camera, NetatmoBase):
     def model(self):
         """Return the camera model."""
         return MODELS[self._model]
-
-    # @property
-    # def unique_id(self):
-    #     """Return the unique ID for this sensor."""
-    #     return self._unique_id
 
     @callback
     def async_update_callback(self):
