@@ -87,7 +87,7 @@ class NetatmoDataHandler:
                     self.data[
                         data_class["name"]
                     ] = await self.hass.async_add_executor_job(
-                        partial(data_class["class"], **data_class["kwargs"],),
+                        partial(data_class["class"], **data_class["kwargs"]),
                         self._auth,
                     )
                     async_dispatcher_send(
@@ -100,13 +100,13 @@ class NetatmoDataHandler:
             self.hass, async_update, timedelta(seconds=SCAN_INTERVAL)
         )
 
-        async def handle_event(event):
-            """Handle webhook events."""
-            if event.data["data"]["push_type"] == "webhook_activation":
-                _LOGGER.info("%s webhook successfully registered", MANUFACTURER)
-                self._webhook = True
+        self.hass.bus.async_listen("netatmo_event", self.handle_event)
 
-        self.hass.bus.async_listen("netatmo_event", handle_event)
+    async def handle_event(self, event):
+        """Handle webhook events."""
+        if event.data["data"]["push_type"] == "webhook_activation":
+            _LOGGER.info("%s webhook successfully registered", MANUFACTURER)
+            self._webhook = True
 
     async def register_data_class(self, data_class_name, **kwargs):
         """Register data class."""
@@ -132,7 +132,7 @@ class NetatmoDataHandler:
                     self.data[
                         data_class_entry
                     ] = await self.hass.async_add_executor_job(
-                        partial(DATA_CLASSES[data_class_name], **kwargs,), self._auth,
+                        partial(DATA_CLASSES[data_class_name], **kwargs), self._auth,
                     )
                 except (pyatmo.NoDevice, pyatmo.ApiError) as err:
                     _LOGGER.debug(err)
