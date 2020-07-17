@@ -111,9 +111,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
     """Set up the Netatmo energy platform."""
     data_handler = hass.data[DOMAIN][entry.entry_id][DATA_HANDLER]
 
-    data_class = "HomeData"
-    await data_handler.register_data_class(data_class)
-    home_data = data_handler.data.get(data_class)
+    data_class_name = "HomeData"
+    await data_handler.register_data_class(data_class_name)
+    home_data = data_handler.data.get(data_class_name)
 
     if not home_data:
         return
@@ -122,53 +122,38 @@ async def async_setup_entry(hass, entry, async_add_entities):
         """Retrieve Netatmo entities."""
         entities = []
 
-        def get_all_home_ids():
-            """Get all the home ids returned by NetAtmo API."""
-            if home_data is None:
-                return []
-            return [
-                home_data.homes[home_id]["id"]
-                for home_id in home_data.homes
-                if (
-                    "therm_schedules" in home_data.homes[home_id]
-                    and "modules" in home_data.homes[home_id]
-                )
-            ]
-
-        home_ids = get_all_home_ids()
-
-        def get_room_ids(home_id):
-            """Return all module available on the API as a list."""
-            return home_data.rooms[home_id].keys()
+        home_ids = get_all_home_ids(home_data)
 
         for home_id in home_ids:
             _LOGGER.debug("Setting up home %s ...", home_id)
-            for room_id in get_room_ids(home_id):
+            for room_id in home_data.rooms[home_id].keys():
                 room_name = home_data.rooms[home_id][room_id]["name"]
                 _LOGGER.debug("Setting up room %s (%s) ...", room_name, room_id)
                 await data_handler.register_data_class("HomeStatus", home_id=home_id)
                 home_status = data_handler.data.get(f"HomeStatus-{home_id}")
                 if home_status and room_id in home_status.rooms:
                     entities.append(
-                        NetatmoThermostat(data_handler, data_class, home_id, room_id)
+                        NetatmoThermostat(
+                            data_handler, data_class_name, home_id, room_id
+                        )
                     )
                 await data_handler.unregister_data_class(f"HomeStatus-{home_id}")
 
             hass.data[DOMAIN][DATA_SCHEDULES][home_id] = {
                 schedule_id: schedule_data.get("name")
                 for schedule_id, schedule_data in (
-                    data_handler.data[data_class].schedules[home_id].items()
+                    data_handler.data[data_class_name].schedules[home_id].items()
                 )
             }
 
         hass.data[DOMAIN][DATA_HOMES] = {
             home_id: home_data.get("name")
-            for home_id, home_data in (data_handler.data[data_class].homes.items())
+            for home_id, home_data in (data_handler.data[data_class_name].homes.items())
         }
 
         return entities
 
-    await data_handler.unregister_data_class(data_class)
+    await data_handler.unregister_data_class(data_class_name)
     async_add_entities(await get_entities(), True)
 
     platform = entity_platform.current_platform.get()
@@ -187,7 +172,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 class NetatmoThermostat(NetatmoBase, ClimateEntity):
     """Representation a Netatmo thermostat."""
 
-    def __init__(self, data_handler, data_class, home_id, room_id):
+    def __init__(self, data_handler, data_class_name, home_id, room_id):
         """Initialize the sensor."""
         ClimateEntity.__init__(self)
         super().__init__(data_handler)
@@ -198,7 +183,10 @@ class NetatmoThermostat(NetatmoBase, ClimateEntity):
         self._home_status_class = f"HomeStatus-{self._home_id}"
 
         self._data_classes.extend(
-            [{"name": data_class}, {"name": "HomeStatus", "home_id": self._home_id}]
+            [
+                {"name": data_class_name},
+                {"name": "HomeStatus", "home_id": self._home_id},
+            ]
         )
 
         self._home_status = self.data_handler.data[self._home_status_class]
@@ -209,6 +197,7 @@ class NetatmoThermostat(NetatmoBase, ClimateEntity):
         for module in self._room_data.get("module_ids"):
             if self._home_status.thermostats.get(module):
                 self._model = NA_THERM
+                break
 
         self._state = None
         self._device_name = self._data.rooms[home_id][room_id]["name"]
@@ -237,7 +226,9 @@ class NetatmoThermostat(NetatmoBase, ClimateEntity):
         """Entity created."""
         await super().async_added_to_hass()
 
-        self.hass.bus.async_listen("netatmo_event", self.handle_event)
+        self._listeners.append(
+            self.hass.bus.async_listen("netatmo_event", self.handle_event)
+        )
 
     async def handle_event(self, event):
         """Handle webhook events."""
@@ -569,3 +560,17 @@ def interpolate(batterylevel, module_type):
         / (levels[i + 1] - levels[i])
     )
     return int(pct)
+
+
+def get_all_home_ids(home_data):
+    """Get all the home ids returned by NetAtmo API."""
+    if home_data is None:
+        return []
+    return [
+        home_data.homes[home_id]["id"]
+        for home_id in home_data.homes
+        if (
+            "therm_schedules" in home_data.homes[home_id]
+            and "modules" in home_data.homes[home_id]
+        )
+    ]
