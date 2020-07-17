@@ -2,10 +2,9 @@
 import logging
 from typing import Dict, List
 
-from homeassistant.core import callback
+from homeassistant.core import CALLBACK_TYPE, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
-from homeassistant.helpers.entity_registry import async_entries_for_device
 
 from .const import DOMAIN, MANUFACTURER, MODELS
 from .data_handler import NetatmoDataHandler
@@ -23,6 +22,13 @@ class NetatmoBase(Entity):
         """Set up Netatmo entity base."""
         self.data_handler = data_handler
         self._data_classes: List[Dict] = []
+        self._listeners: List[CALLBACK_TYPE] = []
+
+        self._device_name = None
+        self._id = None
+        self._model = None
+        self._name = None
+        self._unique_id = None
 
     async def async_added_to_hass(self) -> None:
         """Entity created."""
@@ -56,6 +62,13 @@ class NetatmoBase(Entity):
             )
         self.async_update_callback()
 
+    async def async_will_remove_from_hass(self):
+        """Run when entity will be removed from hass."""
+        await super().async_will_remove_from_hass()
+
+        for listener in self._listeners:
+            listener()
+
     async def async_remove(self):
         """Clean up when removing entity.
 
@@ -69,16 +82,6 @@ class NetatmoBase(Entity):
         entity_entry = entity_registry.async_get(self.entity_id)
         if not entity_entry:
             await super().async_remove()
-            return
-
-        device_registry = await self.hass.helpers.device_registry.async_get_registry()
-        device_entry = device_registry.async_get(entity_entry.device_id)
-        if not device_entry:
-            entity_registry.async_remove(self.entity_id)
-            return
-
-        if len(async_entries_for_device(entity_registry, entity_entry.device_id)) == 1:
-            device_registry.async_remove_device(device_entry.id)
             return
 
         entity_registry.async_remove(self.entity_id)
