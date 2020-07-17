@@ -90,6 +90,13 @@ MODULE_TYPE_WIND = "NAModule2"
 MODULE_TYPE_RAIN = "NAModule3"
 MODULE_TYPE_INDOOR = "NAModule4"
 
+BATTERY_VALUES = {
+    MODULE_TYPE_WIND: {"Full": 5590, "High": 5180, "Medium": 4770, "Low": 4360},
+    MODULE_TYPE_RAIN: {"Full": 5500, "High": 5000, "Medium": 4500, "Low": 4000},
+    MODULE_TYPE_INDOOR: {"Full": 5500, "High": 5280, "Medium": 4920, "Low": 4560},
+    MODULE_TYPE_OUTDOOR: {"Full": 5500, "High": 5000, "Medium": 4500, "Low": 4000},
+}
+
 PUBLIC = "public"
 
 
@@ -98,21 +105,23 @@ async def async_setup_entry(hass, entry, async_add_entities):
     device_registry = await hass.helpers.device_registry.async_get_registry()
     data_handler = hass.data[DOMAIN][entry.entry_id][DATA_HANDLER]
 
-    async def find_entities(data_class):
+    async def find_entities(data_class_name):
         """Find all entities."""
-        await data_handler.register_data_class(data_class)
+        await data_handler.register_data_class(data_class_name)
 
         all_module_infos = {}
         data = data_handler.data
 
-        if not data.get(data_class):
+        if not data.get(data_class_name):
             return []
 
-        for station_id in data.get(data_class).stations:
-            for module_id in data.get(data_class).get_modules(station_id):
-                all_module_infos[module_id] = data.get(data_class).get_module(module_id)
+        data_class = data[data_class_name]
 
-            all_module_infos[station_id] = data.get(data_class).get_station(station_id)
+        for station_id in data_class.stations:
+            for module_id in data_class.get_modules(station_id):
+                all_module_infos[module_id] = data_class.get_module(module_id)
+
+            all_module_infos[station_id] = data_class.get_station(station_id)
 
         entities = []
         for module in all_module_infos.values():
@@ -123,22 +132,24 @@ async def async_setup_entry(hass, entry, async_add_entities):
             _LOGGER.debug(
                 "Adding module %s %s", module.get("module_name"), module.get("_id"),
             )
-            for condition in data[data_class].get_monitored_conditions(
+            for condition in data_class.get_monitored_conditions(
                 module_id=module["_id"]
             ):
                 entities.append(
-                    NetatmoSensor(data_handler, data_class, module, condition.lower())
+                    NetatmoSensor(
+                        data_handler, data_class_name, module, condition.lower()
+                    )
                 )
 
-        await data_handler.unregister_data_class(data_class)
+        await data_handler.unregister_data_class(data_class_name)
         return entities
 
     async def get_entities():
         """Retrieve Netatmo entities."""
         entities = []
 
-        for data_class in ["WeatherStationData", "HomeCoachData"]:
-            entities.extend(await find_entities(data_class))
+        for data_class_name in ["WeatherStationData", "HomeCoachData"]:
+            entities.extend(await find_entities(data_class_name))
 
         return entities
 
@@ -147,13 +158,13 @@ async def async_setup_entry(hass, entry, async_add_entities):
     @callback
     async def add_public_entities():
         """Retrieve Netatmo public weather entities."""
-        data_class = "PublicData"
+        data_class_name = "PublicData"
         entities = []
         for area in [
             NetatmoArea(**i) for i in entry.options.get(CONF_WEATHER_AREAS, {}).values()
         ]:
             await data_handler.register_data_class(
-                data_class,
+                data_class_name,
                 LAT_NE=area.lat_ne,
                 LON_NE=area.lon_ne,
                 LAT_SW=area.lat_sw,
@@ -162,9 +173,13 @@ async def async_setup_entry(hass, entry, async_add_entities):
             )
             for sensor_type in SUPPORTED_PUBLIC_SENSOR_TYPES:
                 entities.append(
-                    NetatmoPublicSensor(data_handler, data_class, area, sensor_type,)
+                    NetatmoPublicSensor(
+                        data_handler, data_class_name, area, sensor_type,
+                    )
                 )
-            await data_handler.unregister_data_class(f"{data_class}-{area.area_name}")
+            await data_handler.unregister_data_class(
+                f"{data_class_name}-{area.area_name}"
+            )
 
         for device in async_entries_for_config_entry(device_registry, entry.entry_id):
             if device.model == "Public Weather stations":
@@ -195,11 +210,11 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 class NetatmoSensor(NetatmoBase):
     """Implementation of a Netatmo sensor."""
 
-    def __init__(self, data_handler, data_class, module_info, sensor_type):
+    def __init__(self, data_handler, data_class_name, module_info, sensor_type):
         """Initialize the sensor."""
         super().__init__(data_handler)
 
-        self._data_classes.append({"name": data_class})
+        self._data_classes.append({"name": data_class_name})
 
         self._id = module_info["_id"]
         self._station_id = module_info.get("main_device", self._id)
@@ -294,50 +309,8 @@ class NetatmoSensor(NetatmoBase):
                 self._state = data["battery_percent"]
             elif self.type == "battery_lvl":
                 self._state = data["battery_vp"]
-            elif self.type == "battery_vp" and self._model == MODULE_TYPE_WIND:
-                if data["battery_vp"] >= 5590:
-                    self._state = "Full"
-                elif data["battery_vp"] >= 5180:
-                    self._state = "High"
-                elif data["battery_vp"] >= 4770:
-                    self._state = "Medium"
-                elif data["battery_vp"] >= 4360:
-                    self._state = "Low"
-                else:
-                    self._state = "Very Low"
-            elif self.type == "battery_vp" and self._model == MODULE_TYPE_RAIN:
-                if data["battery_vp"] >= 5500:
-                    self._state = "Full"
-                elif data["battery_vp"] >= 5000:
-                    self._state = "High"
-                elif data["battery_vp"] >= 4500:
-                    self._state = "Medium"
-                elif data["battery_vp"] >= 4000:
-                    self._state = "Low"
-                else:
-                    self._state = "Very Low"
-            elif self.type == "battery_vp" and self._model == MODULE_TYPE_INDOOR:
-                if data["battery_vp"] >= 5640:
-                    self._state = "Full"
-                elif data["battery_vp"] >= 5280:
-                    self._state = "High"
-                elif data["battery_vp"] >= 4920:
-                    self._state = "Medium"
-                elif data["battery_vp"] >= 4560:
-                    self._state = "Low"
-                else:
-                    self._state = "Very Low"
-            elif self.type == "battery_vp" and self._model == MODULE_TYPE_OUTDOOR:
-                if data["battery_vp"] >= 5500:
-                    self._state = "Full"
-                elif data["battery_vp"] >= 5000:
-                    self._state = "High"
-                elif data["battery_vp"] >= 4500:
-                    self._state = "Medium"
-                elif data["battery_vp"] >= 4000:
-                    self._state = "Low"
-                else:
-                    self._state = "Very Low"
+            elif self.type == "battery_vp":
+                self._state = process_battery(data["battery_vp"], self._model)
             elif self.type == "min_temp":
                 self._state = data["min_temp"]
             elif self.type == "max_temp":
@@ -345,47 +318,13 @@ class NetatmoSensor(NetatmoBase):
             elif self.type == "windangle_value":
                 self._state = data["WindAngle"]
             elif self.type == "windangle":
-                if data["WindAngle"] >= 330:
-                    self._state = "N (%d\xb0)" % data["WindAngle"]
-                elif data["WindAngle"] >= 300:
-                    self._state = "NW (%d\xb0)" % data["WindAngle"]
-                elif data["WindAngle"] >= 240:
-                    self._state = "W (%d\xb0)" % data["WindAngle"]
-                elif data["WindAngle"] >= 210:
-                    self._state = "SW (%d\xb0)" % data["WindAngle"]
-                elif data["WindAngle"] >= 150:
-                    self._state = "S (%d\xb0)" % data["WindAngle"]
-                elif data["WindAngle"] >= 120:
-                    self._state = "SE (%d\xb0)" % data["WindAngle"]
-                elif data["WindAngle"] >= 60:
-                    self._state = "E (%d\xb0)" % data["WindAngle"]
-                elif data["WindAngle"] >= 30:
-                    self._state = "NE (%d\xb0)" % data["WindAngle"]
-                elif data["WindAngle"] >= 0:
-                    self._state = "N (%d\xb0)" % data["WindAngle"]
+                self._state = process_angle(data["WindAngle"])
             elif self.type == "windstrength":
                 self._state = data["WindStrength"]
             elif self.type == "gustangle_value":
                 self._state = data["GustAngle"]
             elif self.type == "gustangle":
-                if data["GustAngle"] >= 330:
-                    self._state = "N (%d\xb0)" % data["GustAngle"]
-                elif data["GustAngle"] >= 300:
-                    self._state = "NW (%d\xb0)" % data["GustAngle"]
-                elif data["GustAngle"] >= 240:
-                    self._state = "W (%d\xb0)" % data["GustAngle"]
-                elif data["GustAngle"] >= 210:
-                    self._state = "SW (%d\xb0)" % data["GustAngle"]
-                elif data["GustAngle"] >= 150:
-                    self._state = "S (%d\xb0)" % data["GustAngle"]
-                elif data["GustAngle"] >= 120:
-                    self._state = "SE (%d\xb0)" % data["GustAngle"]
-                elif data["GustAngle"] >= 60:
-                    self._state = "E (%d\xb0)" % data["GustAngle"]
-                elif data["GustAngle"] >= 30:
-                    self._state = "NE (%d\xb0)" % data["GustAngle"]
-                elif data["GustAngle"] >= 0:
-                    self._state = "N (%d\xb0)" % data["GustAngle"]
+                self._state = process_angle(data["GustAngle"])
             elif self.type == "guststrength":
                 self._state = data["GustStrength"]
             elif self.type == "reachable":
@@ -393,36 +332,13 @@ class NetatmoSensor(NetatmoBase):
             elif self.type == "rf_status_lvl":
                 self._state = data["rf_status"]
             elif self.type == "rf_status":
-                if data["rf_status"] >= 90:
-                    self._state = "Low"
-                elif data["rf_status"] >= 76:
-                    self._state = "Medium"
-                elif data["rf_status"] >= 60:
-                    self._state = "High"
-                elif data["rf_status"] <= 59:
-                    self._state = "Full"
+                self._state = process_rf(data["rf_status"])
             elif self.type == "wifi_status_lvl":
                 self._state = data["wifi_status"]
             elif self.type == "wifi_status":
-                if data["wifi_status"] >= 86:
-                    self._state = "Low"
-                elif data["wifi_status"] >= 71:
-                    self._state = "Medium"
-                elif data["wifi_status"] >= 56:
-                    self._state = "High"
-                elif data["wifi_status"] <= 55:
-                    self._state = "Full"
+                self._state = process_wifi(data["wifi_status"])
             elif self.type == "health_idx":
-                if data["health_idx"] == 0:
-                    self._state = "Healthy"
-                elif data["health_idx"] == 1:
-                    self._state = "Fine"
-                elif data["health_idx"] == 2:
-                    self._state = "Fair"
-                elif data["health_idx"] == 3:
-                    self._state = "Poor"
-                elif data["health_idx"] == 4:
-                    self._state = "Unhealthy"
+                self._state = process_health(data["health_idx"])
         except KeyError:
             if self._state:
                 _LOGGER.debug("No %s data found for %s", self.type, self._device_name)
@@ -430,16 +346,88 @@ class NetatmoSensor(NetatmoBase):
             return
 
 
+def process_angle(angle: int) -> str:
+    """Process angle and return string for display."""
+    if angle >= 330:
+        return f"N ({angle}\xb0)"
+    if angle >= 300:
+        return f"NW ({angle}\xb0)"
+    if angle >= 240:
+        return f"W ({angle}\xb0)"
+    if angle >= 210:
+        return f"SW ({angle}\xb0)"
+    if angle >= 150:
+        return f"S ({angle}\xb0)"
+    if angle >= 120:
+        return f"SE ({angle}\xb0)"
+    if angle >= 60:
+        return f"E ({angle}\xb0)"
+    if angle >= 30:
+        return f"NE ({angle}\xb0)"
+    return f"N ({angle}\xb0)"
+
+
+def process_battery(data: int, model: str) -> str:
+    """Process battery data and return string for display."""
+    values = BATTERY_VALUES[model]
+
+    if data >= values["Full"]:
+        return "Full"
+    if data >= values["High"]:
+        return "High"
+    if data >= values["Medium"]:
+        return "Medium"
+    if data >= values["Low"]:
+        return "Low"
+    return "Very Low"
+
+
+def process_health(health):
+    """Process health index and return string for display."""
+    if health == 0:
+        return "Healthy"
+    if health == 1:
+        return "Fine"
+    if health == 2:
+        return "Fair"
+    if health == 3:
+        return "Poor"
+    if health == 4:
+        return "Unhealthy"
+
+
+def process_rf(strength):
+    """Process wifi signal strength and return string for display."""
+    if strength >= 90:
+        return "Low"
+    if strength >= 76:
+        return "Medium"
+    if strength >= 60:
+        return "High"
+    return "Full"
+
+
+def process_wifi(strength):
+    """Process wifi signal strength and return string for display."""
+    if strength >= 86:
+        return "Low"
+    if strength >= 71:
+        return "Medium"
+    if strength >= 56:
+        return "High"
+    return "Full"
+
+
 class NetatmoPublicSensor(NetatmoBase):
     """Represent a single sensor in a Netatmo."""
 
-    def __init__(self, data_handler, data_class, area, sensor_type):
+    def __init__(self, data_handler, data_class_name, area, sensor_type):
         """Initialize the sensor."""
         super().__init__(data_handler)
 
         self._data_classes.append(
             {
-                "name": data_class,
+                "name": data_class_name,
                 "LAT_NE": area.lat_ne,
                 "LON_NE": area.lon_ne,
                 "LAT_SW": area.lat_sw,

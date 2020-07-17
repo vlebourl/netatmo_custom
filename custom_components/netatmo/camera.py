@@ -63,16 +63,23 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
     data_handler = hass.data[DOMAIN][entry.entry_id][DATA_HANDLER]
 
-    data_class = "CameraData"
+    data_class_name = "CameraData"
 
     async def get_entities():
         """Retrieve Netatmo entities."""
-        await data_handler.register_data_class(data_class)
+        await data_handler.register_data_class(data_class_name)
+
+        data = data_handler.data
+
+        if not data.get(data_class_name):
+            return []
+
+        data_class = data_handler.data[data_class_name]
 
         entities = []
         try:
             all_cameras = []
-            for home in data_handler.data[data_class].cameras.values():
+            for home in data_class.cameras.values():
                 for camera in home.values():
                     all_cameras.append(camera)
 
@@ -81,7 +88,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 entities.append(
                     NetatmoCamera(
                         data_handler,
-                        data_class,
+                        data_class_name,
                         camera["id"],
                         camera["type"],
                         camera["home_id"],
@@ -89,21 +96,23 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     )
                 )
 
-            for person_id, person_data in data_handler.data[data_class].persons.items():
+            for person_id, person_data in data_handler.data[
+                data_class_name
+            ].persons.items():
                 hass.data[DOMAIN][DATA_PERSONS][person_id] = person_data.get(
                     ATTR_PSEUDO
                 )
         except pyatmo.NoDevice:
             _LOGGER.debug("No cameras found")
 
-        await data_handler.unregister_data_class(data_class)
+        await data_handler.unregister_data_class(data_class_name)
         return entities
 
     async_add_entities(await get_entities(), True)
 
     platform = entity_platform.current_platform.get()
 
-    if data_handler.data[data_class] is not None:
+    if data_handler.data[data_class_name] is not None:
         platform.async_register_entity_service(
             SERVICE_SETPERSONSHOME,
             SCHEMA_SERVICE_SETPERSONSHOME,
@@ -125,13 +134,13 @@ class NetatmoCamera(NetatmoBase, Camera):
     """Representation of a Netatmo camera."""
 
     def __init__(
-        self, data_handler, data_class, camera_id, camera_type, home_id, quality,
+        self, data_handler, data_class_name, camera_id, camera_type, home_id, quality,
     ):
         """Set up for access to the Netatmo camera images."""
         Camera.__init__(self)
         super().__init__(data_handler)
 
-        self._data_classes.append({"name": data_class})
+        self._data_classes.append({"name": data_class_name})
 
         self._id = camera_id
         self._home_id = home_id
@@ -149,9 +158,11 @@ class NetatmoCamera(NetatmoBase, Camera):
 
     async def async_added_to_hass(self) -> None:
         """Entity created."""
-        await NetatmoBase.async_added_to_hass(self)
+        await super().async_added_to_hass()
 
-        self.hass.bus.async_listen("netatmo_event", self.handle_event)
+        self._listeners.append(
+            self.hass.bus.async_listen("netatmo_event", self.handle_event)
+        )
 
     async def handle_event(self, event):
         """Handle webhook events."""
@@ -191,11 +202,13 @@ class NetatmoCamera(NetatmoBase, Camera):
                     camera_id=self._id
                 )
                 return None
+
         except requests.exceptions.RequestException as error:
             _LOGGER.info("Welcome/Presence URL changed: %s", error)
             self._data.update_camera_urls(camera_id=self._id)
             (self._vpnurl, self._localurl) = self._data.camera_urls(camera_id=self._id)
             return None
+
         return response.content
 
     @property
@@ -214,7 +227,7 @@ class NetatmoCamera(NetatmoBase, Camera):
     @property
     def available(self):
         """Return True if entity is available."""
-        return bool(self._alim_status == "on")
+        return bool(self._alim_status == "on" or self._status == "disconnected")
 
     @property
     def supported_features(self):
