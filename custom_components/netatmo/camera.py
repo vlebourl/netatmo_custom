@@ -1,213 +1,316 @@
-"""The Netatmo integration."""
-import asyncio
+"""Support for the Netatmo cameras."""
 import logging
-import secrets
 
 from . import pyatmo
+import requests
 import voluptuous as vol
 
-from homeassistant.components import cloud
-from homeassistant.components.webhook import (
-    async_register as webhook_register,
-    async_unregister as webhook_unregister,
+from homeassistant.components.camera import (
+    DOMAIN as CAMERA_DOMAIN,
+    SUPPORT_STREAM,
+    Camera,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import (
-    CONF_CLIENT_ID,
-    CONF_CLIENT_SECRET,
-    CONF_DISCOVERY,
-    CONF_USERNAME,
-    CONF_WEBHOOK_ID,
-    EVENT_HOMEASSISTANT_START,
-    EVENT_HOMEASSISTANT_STOP,
-)
-from homeassistant.core import CoreState, HomeAssistant
-from homeassistant.helpers import config_entry_oauth2_flow, config_validation as cv
+from homeassistant.const import ATTR_ENTITY_ID
+from homeassistant.core import callback
+from homeassistant.helpers import config_validation as cv, entity_platform
 
-from . import api, config_flow
 from .const import (
-    AUTH,
-    CONF_CLOUDHOOK_URL,
-    DATA_DEVICE_IDS,
+    ATTR_PERSON,
+    ATTR_PERSONS,
+    ATTR_PSEUDO,
     DATA_HANDLER,
-    DATA_HOMES,
     DATA_PERSONS,
-    DATA_SCHEDULES,
     DOMAIN,
-    OAUTH2_AUTHORIZE,
-    OAUTH2_TOKEN,
+    MANUFACTURER,
+    MODELS,
+    SERVICE_SETPERSONAWAY,
+    SERVICE_SETPERSONSHOME,
 )
-from .data_handler import NetatmoDataHandler
-from .webhook import handle_webhook
+from .netatmo_entity_base import NetatmoBase
 
 _LOGGER = logging.getLogger(__name__)
 
-CONF_SECRET_KEY = "secret_key"
-CONF_WEBHOOKS = "webhooks"
+CONF_HOME = "home"
+CONF_CAMERAS = "cameras"
+CONF_QUALITY = "quality"
 
-WAIT_FOR_CLOUD = 5
+DEFAULT_QUALITY = "high"
 
-CONFIG_SCHEMA = vol.Schema(
+VALID_QUALITIES = ["high", "medium", "low", "poor"]
+
+SCHEMA_SERVICE_SETPERSONSHOME = vol.Schema(
     {
-        DOMAIN: vol.Schema(
-            {
-                vol.Required(CONF_CLIENT_ID): cv.string,
-                vol.Required(CONF_CLIENT_SECRET): cv.string,
-                cv.deprecated(CONF_SECRET_KEY): cv.match_all,
-                cv.deprecated(CONF_USERNAME): cv.match_all,
-                cv.deprecated(CONF_WEBHOOKS): cv.match_all,
-                cv.deprecated(CONF_DISCOVERY): cv.match_all,
-            }
-        )
-    },
-    extra=vol.ALLOW_EXTRA,
+        vol.Required(ATTR_ENTITY_ID): cv.entity_domain(CAMERA_DOMAIN),
+        vol.Required(ATTR_PERSONS): vol.All(cv.ensure_list, [cv.string]),
+    }
 )
 
-PLATFORMS = ["camera", "climate", "light", "sensor"]
-
-
-async def async_setup(hass: HomeAssistant, config: dict):
-    """Set up the Netatmo component."""
-    hass.data[DOMAIN] = {}
-    hass.data[DOMAIN][DATA_PERSONS] = {}
-    hass.data[DOMAIN][DATA_DEVICE_IDS] = {}
-    hass.data[DOMAIN][DATA_SCHEDULES] = {}
-    hass.data[DOMAIN][DATA_HOMES] = {}
-
-    if DOMAIN not in config:
-        return True
-
-    config_flow.NetatmoFlowHandler.async_register_implementation(
-        hass,
-        config_entry_oauth2_flow.LocalOAuth2Implementation(
-            hass,
-            DOMAIN,
-            config[DOMAIN][CONF_CLIENT_ID],
-            config[DOMAIN][CONF_CLIENT_SECRET],
-            OAUTH2_AUTHORIZE,
-            OAUTH2_TOKEN,
-        ),
-    )
-
-    return True
-
-
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
-    """Set up Netatmo from a config entry."""
-    implementation = await config_entry_oauth2_flow.async_get_config_entry_implementation(
-        hass, entry
-    )
-
-    # Set unique id if non was set (migration)
-    if not entry.unique_id:
-        hass.config_entries.async_update_entry(entry, unique_id=DOMAIN)
-
-    hass.data[DOMAIN][entry.entry_id] = {
-        AUTH: api.ConfigEntryNetatmoAuth(hass, entry, implementation)
+SCHEMA_SERVICE_SETPERSONAWAY = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_domain(CAMERA_DOMAIN),
+        vol.Optional(ATTR_PERSON): cv.string,
     }
+)
 
-    data_handler = NetatmoDataHandler(hass, entry)
-    await data_handler.async_setup()
-    hass.data[DOMAIN][entry.entry_id][DATA_HANDLER] = data_handler
 
-    for component in PLATFORMS:
-        hass.async_create_task(
-            hass.config_entries.async_forward_entry_setup(entry, component)
+async def async_setup_entry(hass, entry, async_add_entities):
+    """Set up the Netatmo camera platform."""
+    if "access_camera" not in entry.data["token"]["scope"]:
+        _LOGGER.info(
+            "Cameras are currently not supported with this authentication method"
         )
+        return
 
-    async def unregister_webhook(event):
-        if CONF_WEBHOOK_ID not in entry.data:
-            return
-        _LOGGER.debug("Unregister Netatmo webhook (%s)", entry.data[CONF_WEBHOOK_ID])
-        webhook_unregister(hass, entry.data[CONF_WEBHOOK_ID])
+    data_handler = hass.data[DOMAIN][entry.entry_id][DATA_HANDLER]
 
-    async def register_webhook(event):
-        if CONF_WEBHOOK_ID not in entry.data:
-            data = {**entry.data, CONF_WEBHOOK_ID: secrets.token_hex()}
-            hass.config_entries.async_update_entry(entry, data=data)
+    data_class_name = "CameraData"
 
-        if hass.components.cloud.async_active_subscription():
-            if CONF_CLOUDHOOK_URL not in entry.data:
-                webhook_url = await hass.components.cloud.async_create_cloudhook(
-                    entry.data[CONF_WEBHOOK_ID]
+    async def get_entities():
+        """Retrieve Netatmo entities."""
+        await data_handler.register_data_class(data_class_name)
+
+        data = data_handler.data
+
+        if not data.get(data_class_name):
+            return []
+
+        data_class = data_handler.data[data_class_name]
+
+        entities = []
+        try:
+            all_cameras = []
+            for home in data_class.cameras.values():
+                for camera in home.values():
+                    all_cameras.append(camera)
+
+            for camera in all_cameras:
+                _LOGGER.debug("Adding camera %s %s", camera["id"], camera["name"])
+                entities.append(
+                    NetatmoCamera(
+                        data_handler,
+                        data_class_name,
+                        camera["id"],
+                        camera["type"],
+                        camera["home_id"],
+                        DEFAULT_QUALITY,
+                    )
                 )
-                data = {**entry.data, CONF_CLOUDHOOK_URL: webhook_url}
-                hass.config_entries.async_update_entry(entry, data=data)
-            else:
-                webhook_url = entry.data[CONF_CLOUDHOOK_URL]
-        else:
-            webhook_url = hass.components.webhook.async_generate_url(
-                entry.data[CONF_WEBHOOK_ID]
-            )
 
-        if entry.data["auth_implementation"] == "cloud" and not webhook_url.startswith(
-            "https://"
-        ):
-            _LOGGER.warning(
-                "Webhook not registered - "
-                "https and port 443 is required to register the webhook"
-            )
+            for person_id, person_data in data_handler.data[
+                data_class_name
+            ].persons.items():
+                hass.data[DOMAIN][DATA_PERSONS][person_id] = person_data.get(
+                    ATTR_PSEUDO
+                )
+        except pyatmo.NoDevice:
+            _LOGGER.debug("No cameras found")
+
+        await data_handler.unregister_data_class(data_class_name)
+        return entities
+
+    async_add_entities(await get_entities(), True)
+
+    platform = entity_platform.current_platform.get()
+
+    if data_handler.data[data_class_name] is not None:
+        platform.async_register_entity_service(
+            SERVICE_SETPERSONSHOME,
+            SCHEMA_SERVICE_SETPERSONSHOME,
+            "_service_setpersonshome",
+        )
+        platform.async_register_entity_service(
+            SERVICE_SETPERSONAWAY,
+            SCHEMA_SERVICE_SETPERSONAWAY,
+            "_service_setpersonaway",
+        )
+
+
+async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
+    """Set up the Netatmo camera platform."""
+    return
+
+
+class NetatmoCamera(NetatmoBase, Camera):
+    """Representation of a Netatmo camera."""
+
+    def __init__(
+        self, data_handler, data_class_name, camera_id, camera_type, home_id, quality,
+    ):
+        """Set up for access to the Netatmo camera images."""
+        Camera.__init__(self)
+        super().__init__(data_handler)
+
+        self._data_classes.append({"name": data_class_name})
+
+        self._id = camera_id
+        self._home_id = home_id
+        self._device_name = self._data.get_camera(camera_id=camera_id).get("name")
+        self._name = f"{MANUFACTURER} {self._device_name}"
+        self._model = camera_type
+        self._unique_id = f"{self._id}-{self._model}"
+        self._quality = quality
+        self._vpnurl = None
+        self._localurl = None
+        self._status = None
+        self._sd_status = None
+        self._alim_status = None
+        self._is_local = None
+
+    async def async_added_to_hass(self) -> None:
+        """Entity created."""
+        await super().async_added_to_hass()
+
+        self._listeners.append(
+            self.hass.bus.async_listen("netatmo_event", self.handle_event)
+        )
+
+    async def handle_event(self, event):
+        """Handle webhook events."""
+        data = event.data["data"]
+
+        if not data.get("event_type"):
             return
 
+        if not data.get("camera_id"):
+            return
+
+        if data["home_id"] == self._home_id and data["camera_id"] == self._id:
+            if data["push_type"] in ["NACamera-off", "NACamera-disconnection"]:
+                self.is_streaming = False
+                self._status = "off"
+            elif data["push_type"] in ["NACamera-on", "NACamera-connection"]:
+                self.is_streaming = True
+                self._status = "on"
+
+            self.async_write_ha_state()
+            return
+
+    def camera_image(self):
+        """Return a still image response from the camera."""
         try:
-            webhook_register(
-                hass, DOMAIN, "Netatmo", entry.data[CONF_WEBHOOK_ID], handle_webhook
-            )
-            await hass.async_add_executor_job(
-                hass.data[DOMAIN][entry.entry_id][AUTH].addwebhook, webhook_url
-            )
-            _LOGGER.info("Register Netatmo webhook: %s", webhook_url)
-        except pyatmo.ApiError as err:
-            _LOGGER.error("Error during webhook registration - %s", err)
+            if self._localurl:
+                response = requests.get(
+                    f"{self._localurl}/live/snapshot_720.jpg", timeout=10
+                )
+            elif self._vpnurl:
+                response = requests.get(
+                    f"{self._vpnurl}/live/snapshot_720.jpg", timeout=10, verify=True,
+                )
+            else:
+                _LOGGER.error("Welcome/Presence VPN URL is None")
+                (self._vpnurl, self._localurl) = self._data.camera_urls(
+                    camera_id=self._id
+                )
+                return None
 
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, unregister_webhook)
+        except requests.exceptions.RequestException as error:
+            _LOGGER.info("Welcome/Presence URL changed: %s", error)
+            self._data.update_camera_urls(camera_id=self._id)
+            (self._vpnurl, self._localurl) = self._data.camera_urls(camera_id=self._id)
+            return None
 
-    if hass.state == CoreState.running:
-        await register_webhook(None)
-    else:
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_START, register_webhook)
+        return response.content
 
-    hass.services.async_register(DOMAIN, "register_webhook", register_webhook)
-    hass.services.async_register(DOMAIN, "unregister_webhook", unregister_webhook)
+    @property
+    def device_state_attributes(self):
+        """Return the Netatmo-specific camera state attributes."""
+        return {
+            "id": self._id,
+            "status": self._status,
+            "sd_status": self._sd_status,
+            "alim_status": self._alim_status,
+            "is_local": self._is_local,
+            "vpn_url": self._vpnurl,
+            "local_url": self._localurl,
+        }
 
-    return True
+    @property
+    def available(self):
+        """Return True if entity is available."""
+        return bool(self._alim_status == "on" or self._status == "disconnected")
 
+    @property
+    def supported_features(self):
+        """Return supported features."""
+        return SUPPORT_STREAM
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
-    """Unload a config entry."""
-    if CONF_WEBHOOK_ID in entry.data:
-        await hass.async_add_executor_job(
-            hass.data[DOMAIN][entry.entry_id][AUTH].dropwebhook
+    @property
+    def brand(self):
+        """Return the camera brand."""
+        return MANUFACTURER
+
+    @property
+    def motion_detection_enabled(self):
+        """Return the camera motion detection status."""
+        return bool(self._status == "on")
+
+    @property
+    def is_on(self):
+        """Return true if on."""
+        return self.is_streaming
+
+    def turn_off(self):
+        """Turn off camera."""
+        self._data.set_state(
+            home_id=self._home_id, camera_id=self._id, monitoring="off"
         )
-        _LOGGER.info("Unregister Netatmo webhook.")
 
-    await hass.data[DOMAIN][entry.entry_id][DATA_HANDLER].async_cleanup()
+    def turn_on(self):
+        """Turn on camera."""
+        self._data.set_state(home_id=self._home_id, camera_id=self._id, monitoring="on")
 
-    unload_ok = all(
-        await asyncio.gather(
-            *[
-                hass.config_entries.async_forward_entry_unload(entry, component)
-                for component in PLATFORMS
-            ]
-        )
-    )
+    async def stream_source(self):
+        """Return the stream source."""
+        url = "{0}/live/files/{1}/index.m3u8"
+        if self._localurl:
+            return url.format(self._localurl, self._quality)
+        return url.format(self._vpnurl, self._quality)
 
-    if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
+    @property
+    def model(self):
+        """Return the camera model."""
+        return MODELS[self._model]
 
-    return unload_ok
+    @callback
+    def async_update_callback(self):
+        """Update the entity's state."""
+        camera = self._data.get_camera(self._id)
+        self._vpnurl, self._localurl = self._data.camera_urls(self._id)
+        self._status = camera.get("status")
+        self._sd_status = camera.get("sd_status")
+        self._alim_status = camera.get("alim_status")
+        self._is_local = camera.get("is_local")
+        self.is_streaming = bool(self._status == "on")
 
+    def _service_setpersonshome(self, **kwargs):
+        """Service to change current home schedule."""
+        persons = kwargs.get(ATTR_PERSONS)
+        person_ids = []
+        for person in persons:
+            for pid, data in self._data.persons.items():
+                if data.get("pseudo") == person:
+                    person_ids.append(pid)
 
-async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry):
-    """Cleanup when entry is removed."""
-    if (
-        CONF_WEBHOOK_ID in entry.data
-        and hass.components.cloud.async_active_subscription()
-    ):
-        try:
-            _LOGGER.debug(
-                "Removing Netatmo cloudhook (%s)", entry.data[CONF_WEBHOOK_ID]
+        self._data.set_persons_home(person_ids=person_ids, home_id=self._home_id)
+        _LOGGER.info("Set %s as at home", persons)
+
+    def _service_setpersonaway(self, **kwargs):
+        """Service to mark a person as away or set the home as empty."""
+        person = kwargs.get(ATTR_PERSON)
+        person_id = None
+        if person:
+            for pid, data in self._data.persons.items():
+                if data.get("pseudo") == person:
+                    person_id = pid
+
+        if person_id is not None:
+            self._data.set_persons_away(
+                person_id=person_id, home_id=self._home_id,
             )
-            await cloud.async_delete_cloudhook(hass, entry.data[CONF_WEBHOOK_ID])
-        except cloud.CloudNotAvailable:
-            pass
+            _LOGGER.info("Set %s as away", person)
+
+        else:
+            self._data.set_persons_away(
+                person_id=person_id, home_id=self._home_id,
+            )
+            _LOGGER.info("Set home as empty")
