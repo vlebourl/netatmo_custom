@@ -8,6 +8,7 @@ from homeassistant.core import callback
 from homeassistant.exceptions import PlatformNotReady
 
 from .const import DATA_HANDLER, DOMAIN, MANUFACTURER
+from .data_handler import NetatmoDataHandler
 from .netatmo_entity_base import NetatmoBase
 
 _LOGGER = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ class NetatmoLight(NetatmoBase, LightEntity):
 
     def __init__(
         self,
-        data_handler,
+        data_handler: NetatmoDataHandler,
         data_class_name: str,
         camera_id: str,
         camera_type: str,
