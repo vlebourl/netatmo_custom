@@ -166,10 +166,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         await register_webhook(None)
     else:
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_START, register_webhook)
-    
+
     hass.services.async_register(DOMAIN, "register_webhook", register_webhook)
     hass.services.async_register(DOMAIN, "unregister_webhook", unregister_webhook)
-    
+
     return True
 
 
@@ -180,6 +180,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
             hass.data[DOMAIN][entry.entry_id][AUTH].dropwebhook
         )
         _LOGGER.info("Unregister Netatmo webhook.")
+
+    await hass.data[DOMAIN][entry.entry_id][DATA_HANDLER].async_cleanup()
 
     unload_ok = all(
         await asyncio.gather(
