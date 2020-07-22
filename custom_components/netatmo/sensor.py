@@ -20,7 +20,12 @@ from homeassistant.helpers.dispatcher import (
     async_dispatcher_send,
 )
 
-from .const import CONF_WEATHER_AREAS, DATA_HANDLER, DOMAIN, MANUFACTURER, MODELS
+from .const import CONF_WEATHER_AREAS, DATA_HANDLER, DOMAIN, MANUFACTURER, SIGNAL_NAME
+from .data_handler import (
+    HOMECOACH_DATA_CLASS_NAME,
+    PUBLICDATA_DATA_CLASS_NAME,
+    WEATHERSTATION_DATA_CLASS_NAME,
+)
 from .helper import NetatmoArea
 from .netatmo_entity_base import NetatmoBase
 
@@ -54,11 +59,11 @@ SENSOR_TYPES = {
         DEVICE_CLASS_HUMIDITY,
     ],
     "rain": ["Rain", "mm", "mdi:weather-rainy", None],
-    "sum_rain_1": ["sum_rain_1", "mm", "mdi:weather-rainy", None],
-    "sum_rain_24": ["sum_rain_24", "mm", "mdi:weather-rainy", None],
+    "sum_rain_1": ["Rain last hour", "mm", "mdi:weather-rainy", None],
+    "sum_rain_24": ["Rain last 24h", "mm", "mdi:weather-rainy", None],
     "battery_vp": ["Battery", "", "mdi:battery", None],
-    "battery_lvl": ["Battery_lvl", "", "mdi:battery", None],
-    "battery_percent": ["battery_percent", UNIT_PERCENTAGE, None, DEVICE_CLASS_BATTERY],
+    "battery_lvl": ["Battery Level", "", "mdi:battery", None],
+    "battery_percent": ["Battery Percent", UNIT_PERCENTAGE, None, DEVICE_CLASS_BATTERY],
     "min_temp": ["Min Temp.", TEMP_CELSIUS, "mdi:thermometer", None],
     "max_temp": ["Max Temp.", TEMP_CELSIUS, "mdi:thermometer", None],
     "windangle": ["Angle", "", "mdi:compass", None],
@@ -79,9 +84,9 @@ SENSOR_TYPES = {
     ],
     "reachable": ["Reachability", "", "mdi:signal", None],
     "rf_status": ["Radio", "", "mdi:signal", None],
-    "rf_status_lvl": ["Radio_lvl", "", "mdi:signal", None],
+    "rf_status_lvl": ["Radio Level", "", "mdi:signal", None],
     "wifi_status": ["Wifi", "", "mdi:wifi", None],
-    "wifi_status_lvl": ["Wifi_lvl", "dBm", "mdi:wifi", None],
+    "wifi_status_lvl": ["Wifi Level", "dBm", "mdi:wifi", None],
     "health_idx": ["Health", "", "mdi:cloud", None],
 }
 
@@ -104,10 +109,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
     """Set up the Netatmo weather and homecoach platform."""
     device_registry = await hass.helpers.device_registry.async_get_registry()
     data_handler = hass.data[DOMAIN][entry.entry_id][DATA_HANDLER]
+    temp_data_classes = []
 
     async def find_entities(data_class_name):
         """Find all entities."""
-        await data_handler.register_data_class(data_class_name)
+        await data_handler.register_data_class(data_class_name, data_class_name, None)
+        temp_data_classes.append((data_class_name, None))
 
         all_module_infos = {}
         data = data_handler.data
@@ -141,14 +148,16 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     )
                 )
 
-        await data_handler.unregister_data_class(data_class_name)
         return entities
 
     async def get_entities():
         """Retrieve Netatmo entities."""
         entities = []
 
-        for data_class_name in ["WeatherStationData", "HomeCoachData"]:
+        for data_class_name in [
+            WEATHERSTATION_DATA_CLASS_NAME,
+            HOMECOACH_DATA_CLASS_NAME,
+        ]:
             entities.extend(await find_entities(data_class_name))
 
         return entities
@@ -156,37 +165,55 @@ async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(await get_entities(), True)
 
     @callback
-    async def add_public_entities():
+    async def add_public_entities(update=True):
         """Retrieve Netatmo public weather entities."""
-        data_class_name = "PublicData"
-        entities = []
+        temp_data_classes = []
+        entities = {
+            device.name: device
+            for device in async_entries_for_config_entry(
+                device_registry, entry.entry_id
+            )
+            if device.model == "Public Weather stations"
+        }
+
+        new_entities = []
         for area in [
             NetatmoArea(**i) for i in entry.options.get(CONF_WEATHER_AREAS, {}).values()
         ]:
+            signal_name = f"{PUBLICDATA_DATA_CLASS_NAME}-{area.uuid}"
+
+            if area.area_name in entities:
+                device = entities.pop(area.area_name)
+
+                if update:
+                    async_dispatcher_send(
+                        hass, f"netatmo-config-{area.area_name}", area,
+                    )
+                    continue
+
             await data_handler.register_data_class(
-                data_class_name,
+                PUBLICDATA_DATA_CLASS_NAME,
+                signal_name,
+                None,
                 LAT_NE=area.lat_ne,
                 LON_NE=area.lon_ne,
                 LAT_SW=area.lat_sw,
                 LON_SW=area.lon_sw,
-                area_name=area.area_name,
             )
+            temp_data_classes.append((signal_name, None))
             for sensor_type in SUPPORTED_PUBLIC_SENSOR_TYPES:
-                entities.append(
-                    NetatmoPublicSensor(
-                        data_handler, data_class_name, area, sensor_type,
-                    )
+                new_entities.append(
+                    NetatmoPublicSensor(data_handler, area, sensor_type)
                 )
-            await data_handler.unregister_data_class(
-                f"{data_class_name}-{area.area_name}"
-            )
 
-        for device in async_entries_for_config_entry(device_registry, entry.entry_id):
-            if device.model == "Public Weather stations":
-                device_registry.async_remove_device(device.id)
+        for device in entities.values():
+            device_registry.async_remove_device(device.id)
 
-        if entities:
-            async_add_entities(entities)
+        if new_entities:
+            async_add_entities(new_entities)
+
+        for data_class in temp_data_classes:
+            await data_handler.unregister_data_class(*data_class)
 
     async_dispatcher_connect(
         hass, f"signal-{DOMAIN}-public-update-{entry.entry_id}", add_public_entities
@@ -194,7 +221,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
     entry.add_update_listener(async_config_entry_updated)
 
-    await add_public_entities()
+    await add_public_entities(False)
+
+    for data_class in temp_data_classes:
+        await data_handler.unregister_data_class(*data_class)
 
 
 async def async_config_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -214,7 +244,9 @@ class NetatmoSensor(NetatmoBase):
         """Initialize the sensor."""
         super().__init__(data_handler)
 
-        self._data_classes.append({"name": data_class_name})
+        self._data_classes.append(
+            {"name": data_class_name, SIGNAL_NAME: data_class_name}
+        )
 
         self._id = module_info["_id"]
         self._station_id = module_info.get("main_device", self._id)
@@ -421,18 +453,21 @@ def process_wifi(strength):
 class NetatmoPublicSensor(NetatmoBase):
     """Represent a single sensor in a Netatmo."""
 
-    def __init__(self, data_handler, data_class_name, area, sensor_type):
+    def __init__(self, data_handler, area, sensor_type):
         """Initialize the sensor."""
         super().__init__(data_handler)
 
+        self._signal_name = f"{PUBLICDATA_DATA_CLASS_NAME}-{area.uuid}"
+
         self._data_classes.append(
             {
-                "name": data_class_name,
+                "name": PUBLICDATA_DATA_CLASS_NAME,
                 "LAT_NE": area.lat_ne,
                 "LON_NE": area.lon_ne,
                 "LAT_SW": area.lat_sw,
                 "LON_SW": area.lon_sw,
                 "area_name": area.area_name,
+                SIGNAL_NAME: self._signal_name,
             }
         )
 
@@ -440,19 +475,16 @@ class NetatmoPublicSensor(NetatmoBase):
         self.area = area
         self._mode = area.mode
         self._area_name = area.area_name
-        self._name = f"{MANUFACTURER} {self._area_name} {SENSOR_TYPES[self.type][0]}"
+        self._id = self._area_name
+        self._device_name = f"{self._area_name}"
+        self._name = f"{MANUFACTURER} {self._device_name} {SENSOR_TYPES[self.type][0]}"
         self._state = None
         self._device_class = SENSOR_TYPES[self.type][3]
         self._icon = SENSOR_TYPES[self.type][2]
         self._unit_of_measurement = SENSOR_TYPES[self.type][1]
         self._show_on_map = area.show_on_map
-        self._unique_id = f"{self._name.replace(' ', '-')}"
+        self._unique_id = f"{self._device_name.replace(' ', '-')}-{self.type}"
         self._model = PUBLIC
-
-    @property
-    def name(self):
-        """Return the name of the sensor."""
-        return self._name
 
     @property
     def icon(self):
@@ -463,16 +495,6 @@ class NetatmoPublicSensor(NetatmoBase):
     def device_class(self):
         """Return the device class of the sensor."""
         return self._device_class
-
-    @property
-    def device_info(self):
-        """Return the device info for the sensor."""
-        return {
-            "identifiers": {(DOMAIN, self._area_name)},
-            "name": self._area_name,
-            "manufacturer": MANUFACTURER,
-            "model": MODELS[self._model],
-        }
 
     @property
     def device_state_attributes(self):
@@ -496,18 +518,60 @@ class NetatmoPublicSensor(NetatmoBase):
         return self._unit_of_measurement
 
     @property
-    def unique_id(self):
-        """Return the unique ID for this sensor."""
-        return self._unique_id
-
-    @property
     def available(self):
         """Return True if entity is available."""
         return self._state is not None
 
     @property
     def _data(self):
-        return self.data_handler.data[f"PublicData-{self._area_name}"]
+        return self.data_handler.data[self._signal_name]
+
+    async def async_added_to_hass(self) -> None:
+        """Entity created."""
+        await super().async_added_to_hass()
+
+        self.data_handler.listeners.append(
+            async_dispatcher_connect(
+                self.hass,
+                f"netatmo-config-{self.device_info['name']}",
+                self.async_config_update_callback,
+            )
+        )
+
+    @callback
+    async def async_config_update_callback(self, area):
+        """Update the entity's config."""
+        if self.area == area:
+            return
+
+        await self.data_handler.unregister_data_class(
+            self._signal_name, self.async_update_callback
+        )
+
+        self.area = area
+        self._signal_name = f"{PUBLICDATA_DATA_CLASS_NAME}-{area.uuid}"
+        self._data_classes = [
+            {
+                "name": PUBLICDATA_DATA_CLASS_NAME,
+                "LAT_NE": area.lat_ne,
+                "LON_NE": area.lon_ne,
+                "LAT_SW": area.lat_sw,
+                "LON_SW": area.lon_sw,
+                "area_name": area.area_name,
+                SIGNAL_NAME: self._signal_name,
+            }
+        ]
+        self._mode = area.mode
+        self._show_on_map = area.show_on_map
+        await self.data_handler.register_data_class(
+            PUBLICDATA_DATA_CLASS_NAME,
+            self._signal_name,
+            self.async_update_callback,
+            LAT_NE=area.lat_ne,
+            LON_NE=area.lon_ne,
+            LAT_SW=area.lat_sw,
+            LON_SW=area.lon_sw,
+        )
 
     @callback
     def async_update_callback(self):
