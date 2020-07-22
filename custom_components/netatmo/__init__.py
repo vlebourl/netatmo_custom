@@ -15,8 +15,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
-    CONF_DISCOVERY,
-    CONF_USERNAME,
     CONF_WEBHOOK_ID,
     EVENT_HOMEASSISTANT_START,
     EVENT_HOMEASSISTANT_STOP,
@@ -53,17 +51,13 @@ CONFIG_SCHEMA = vol.Schema(
             {
                 vol.Required(CONF_CLIENT_ID): cv.string,
                 vol.Required(CONF_CLIENT_SECRET): cv.string,
-                cv.deprecated(CONF_SECRET_KEY): cv.match_all,
-                cv.deprecated(CONF_USERNAME): cv.match_all,
-                cv.deprecated(CONF_WEBHOOKS): cv.match_all,
-                cv.deprecated(CONF_DISCOVERY): cv.match_all,
             }
         )
     },
     extra=vol.ALLOW_EXTRA,
 )
 
-PLATFORMS = ["camera", "climate", "light", "sensor"]
+PLATFORMS = ["camera", "climate", "sensor"]
 
 
 async def async_setup(hass: HomeAssistant, config: dict):
@@ -115,7 +109,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             hass.config_entries.async_forward_entry_setup(entry, component)
         )
 
-    async def unregister_webhook(event):
+    async def unregister_webhook(_):
         if CONF_WEBHOOK_ID not in entry.data:
             return
         _LOGGER.debug("Unregister Netatmo webhook (%s)", entry.data[CONF_WEBHOOK_ID])
@@ -157,6 +151,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 hass.data[DOMAIN][entry.entry_id][AUTH].addwebhook, webhook_url
             )
             _LOGGER.info("Register Netatmo webhook: %s", webhook_url)
+            hass.async_create_task(
+                hass.config_entries.async_forward_entry_setup(entry, "light")
+            )
         except pyatmo.ApiError as err:
             _LOGGER.error("Error during webhook registration - %s", err)
 

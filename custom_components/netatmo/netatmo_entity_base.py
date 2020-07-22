@@ -3,10 +3,9 @@ import logging
 from typing import Dict, List
 
 from homeassistant.core import CALLBACK_TYPE, callback
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
 
-from .const import DOMAIN, MANUFACTURER, MODELS
+from .const import DOMAIN, MANUFACTURER, MODELS, SIGNAL_NAME
 from .data_handler import NetatmoDataHandler
 
 _LOGGER = logging.getLogger(__name__)
@@ -14,9 +13,6 @@ _LOGGER = logging.getLogger(__name__)
 
 class NetatmoBase(Entity):
     """Netatmo entity base class."""
-
-    DOMAIN = ""
-    TYPE = ""
 
     def __init__(self, data_handler: NetatmoDataHandler) -> None:
         """Set up Netatmo entity base."""
@@ -34,32 +30,32 @@ class NetatmoBase(Entity):
         """Entity created."""
         _LOGGER.debug("New client %s", self.entity_id)
         for data_class in self._data_classes:
+            signal_name = data_class[SIGNAL_NAME]
+
             if "home_id" in data_class:
                 await self.data_handler.register_data_class(
-                    data_class["name"], home_id=data_class["home_id"]
+                    data_class["name"],
+                    signal_name,
+                    self.async_update_callback,
+                    home_id=data_class["home_id"],
                 )
-                signal_name = f"{data_class['name']}-{data_class['home_id']}"
+
             elif data_class["name"] == "PublicData":
                 await self.data_handler.register_data_class(
                     data_class["name"],
+                    signal_name,
+                    self.async_update_callback,
                     LAT_NE=data_class["LAT_NE"],
                     LON_NE=data_class["LON_NE"],
                     LAT_SW=data_class["LAT_SW"],
                     LON_SW=data_class["LON_SW"],
-                    area_name=data_class["area_name"],
                 )
-                signal_name = f"{data_class['name']}-{data_class['area_name']}"
-            else:
-                await self.data_handler.register_data_class(data_class["name"])
-                signal_name = f"{data_class['name']}"
 
-            self.data_handler.listeners.append(
-                async_dispatcher_connect(
-                    self.hass,
-                    f"netatmo-update-{signal_name}",
-                    self.async_update_callback,
+            else:
+                await self.data_handler.register_data_class(
+                    data_class["name"], signal_name, self.async_update_callback
                 )
-            )
+
         self.async_update_callback()
 
     async def async_will_remove_from_hass(self):
@@ -68,6 +64,11 @@ class NetatmoBase(Entity):
 
         for listener in self._listeners:
             listener()
+
+        for data_class in self._data_classes:
+            await self.data_handler.unregister_data_class(
+                data_class[SIGNAL_NAME], self.async_update_callback
+            )
 
     async def async_remove(self):
         """Clean up when removing entity.
@@ -89,14 +90,6 @@ class NetatmoBase(Entity):
     @callback
     def async_update_callback(self):
         """Update the entity's state."""
-        raise NotImplementedError
-
-    async def options_updated(self) -> None:
-        """Config entry options are updated, remove entity if option is disabled."""
-        raise NotImplementedError
-
-    async def remove_item(self, mac_addresses: set) -> None:
-        """Remove entity if MAC is part of set."""
         raise NotImplementedError
 
     @property
