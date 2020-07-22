@@ -19,25 +19,33 @@ from .const import AUTH, DOMAIN, MANUFACTURER
 
 _LOGGER = logging.getLogger(__name__)
 
+CAMERA_DATA_CLASS_NAME = "CameraData"
+WEATHERSTATION_DATA_CLASS_NAME = "WeatherStationData"
+HOMECOACH_DATA_CLASS_NAME = "HomeCoachData"
+HOMEDATA_DATA_CLASS_NAME = "HomeData"
+HOMESTATUS_DATA_CLASS_NAME = "HomeStatus"
+PUBLICDATA_DATA_CLASS_NAME = "PublicData"
+
+NEXT_SCAN = "next_scan"
 
 DATA_CLASSES = {
-    "WeatherStationData": pyatmo.WeatherStationData,
-    "HomeCoachData": pyatmo.HomeCoachData,
-    "CameraData": pyatmo.CameraData,
-    "HomeData": pyatmo.HomeData,
-    "HomeStatus": pyatmo.HomeStatus,
-    "PublicData": pyatmo.PublicData,
+    WEATHERSTATION_DATA_CLASS_NAME: pyatmo.WeatherStationData,
+    HOMECOACH_DATA_CLASS_NAME: pyatmo.HomeCoachData,
+    CAMERA_DATA_CLASS_NAME: pyatmo.CameraData,
+    HOMEDATA_DATA_CLASS_NAME: pyatmo.HomeData,
+    HOMESTATUS_DATA_CLASS_NAME: pyatmo.HomeStatus,
+    PUBLICDATA_DATA_CLASS_NAME: pyatmo.PublicData,
 }
 
 MAX_CALLS_1H = 20
 BATCH_SIZE = 3
 DEFAULT_INTERVALS = {
-    "HomeData": 900,
-    "HomeStatus": 300,
-    "CameraData": 900,
-    "WeatherStationData": 300,
-    "HomeCoachData": 300,
-    "PublicData": 600,
+    HOMEDATA_DATA_CLASS_NAME: 900,
+    HOMESTATUS_DATA_CLASS_NAME: 300,
+    CAMERA_DATA_CLASS_NAME: 900,
+    WEATHERSTATION_DATA_CLASS_NAME: 300,
+    HOMECOACH_DATA_CLASS_NAME: 300,
+    PUBLICDATA_DATA_CLASS_NAME: 600,
 }
 SCAN_INTERVAL = 60
 
@@ -76,9 +84,9 @@ class NetatmoDataHandler:
         to minimize the calls on the api service.
         """
         for data_class in islice(self._queue, 0, BATCH_SIZE):
-            if data_class["next_scan"] > time():
+            if data_class[NEXT_SCAN] > time():
                 continue
-            self._data_classes[data_class["name"]]["next_scan"] = (
+            self._data_classes[data_class["name"]][NEXT_SCAN] = (
                 time() + data_class["interval"]
             )
 
@@ -99,34 +107,37 @@ class NetatmoDataHandler:
             _LOGGER.info("%s webhook successfully registered", MANUFACTURER)
             self._webhook = True
 
+        elif event.data["data"]["push_type"] == "NACamera-connection":
+            _LOGGER.debug("%s camera reconnected", MANUFACTURER)
+            self._data_classes[CAMERA_DATA_CLASS_NAME][NEXT_SCAN] = time()
+
     async def async_fetch_data(self, data_class, data_class_entry, **kwargs):
         """Fetch data and notify."""
         try:
             self.data[data_class_entry] = await self.hass.async_add_executor_job(
                 partial(data_class, **kwargs), self._auth,
             )
-            async_dispatcher_send(self.hass, f"netatmo-update-{data_class_entry}")
+            for update_callback in self._data_classes[data_class_entry][
+                "subscriptions"
+            ]:
+                if update_callback:
+                    update_callback()
         except (pyatmo.NoDevice, pyatmo.ApiError) as err:
             _LOGGER.debug(err)
 
-    async def register_data_class(self, data_class_name, **kwargs):
+    async def register_data_class(
+        self, data_class_name, data_class_entry, update_callback, **kwargs
+    ):
         """Register data class."""
-        if "home_id" in kwargs:
-            data_class_entry = f"{data_class_name}-{kwargs['home_id']}"
-        elif "area_name" in kwargs:
-            data_class_entry = f"{data_class_name}-{kwargs.pop('area_name')}"
-        else:
-            data_class_entry = data_class_name
-
         async with self.lock:
             if data_class_entry not in self._data_classes:
                 self._data_classes[data_class_entry] = {
                     "class": DATA_CLASSES[data_class_name],
                     "name": data_class_entry,
                     "interval": DEFAULT_INTERVALS[data_class_name],
-                    "next_scan": time() + DEFAULT_INTERVALS[data_class_name],
+                    NEXT_SCAN: time() + DEFAULT_INTERVALS[data_class_name],
                     "kwargs": kwargs,
-                    "registered": 1,
+                    "subscriptions": [update_callback],
                 }
 
                 await self.async_fetch_data(
@@ -137,18 +148,22 @@ class NetatmoDataHandler:
                 _LOGGER.debug("Data class %s added", data_class_entry)
 
             else:
-                self._data_classes[data_class_entry].update(
-                    registered=self._data_classes[data_class_entry]["registered"] + 1
+                self._data_classes[data_class_entry]["subscriptions"].append(
+                    update_callback
                 )
 
-    async def unregister_data_class(self, data_class_entry):
+    async def unregister_data_class(self, data_class_entry, update_callback):
         """Unregister data class."""
-        async with self.lock:
-            registered = self._data_classes[data_class_entry]["registered"]
+        # Give the entities a chance to subscribe before removing the data class entry
+        # so that the data can be reused and reduce the number of API calls
+        await asyncio.sleep(1)
 
-            if registered > 1:
-                self._data_classes[data_class_entry].update(registered=registered - 1)
-            else:
+        async with self.lock:
+            self._data_classes[data_class_entry]["subscriptions"].remove(
+                update_callback
+            )
+
+            if not self._data_classes[data_class_entry].get("subscriptions"):
                 self._queue.remove(self._data_classes[data_class_entry])
                 self._data_classes.pop(data_class_entry)
                 _LOGGER.debug("Data class %s removed", data_class_entry)
