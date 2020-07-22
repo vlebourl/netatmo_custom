@@ -7,8 +7,8 @@ import requests
 from oauthlib.oauth2 import LegacyApplicationClient, TokenExpiredError  # type: ignore
 from requests_oauthlib import OAuth2Session  # type: ignore
 
-from pyatmo.exceptions import ApiError
-from pyatmo.helpers import _BASE_URL, ERRORS
+from .exceptions import ApiError
+from .helpers import _BASE_URL, ERRORS
 
 LOG = logging.getLogger(__name__)
 
