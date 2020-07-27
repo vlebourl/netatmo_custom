@@ -310,4 +310,3 @@ class NetatmoCamera(NetatmoBase, Camera):
                 person_id=person_id, home_id=self._home_id,
             )
             _LOGGER.info("Set home as empty")
-
