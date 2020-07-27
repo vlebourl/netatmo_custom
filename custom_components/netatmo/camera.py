@@ -32,13 +32,7 @@ from .netatmo_entity_base import NetatmoBase
 
 _LOGGER = logging.getLogger(__name__)
 
-CONF_HOME = "home"
-CONF_CAMERAS = "cameras"
-CONF_QUALITY = "quality"
-
 DEFAULT_QUALITY = "high"
-
-VALID_QUALITIES = ["high", "medium", "low", "poor"]
 
 SCHEMA_SERVICE_SETPERSONSHOME = vol.Schema(
     {
@@ -64,14 +58,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
         return
 
     data_handler = hass.data[DOMAIN][entry.entry_id][DATA_HANDLER]
-    temp_data_classes = []
 
     async def get_entities():
         """Retrieve Netatmo entities."""
         await data_handler.register_data_class(
             CAMERA_DATA_CLASS_NAME, CAMERA_DATA_CLASS_NAME, None
         )
-        temp_data_classes.append((CAMERA_DATA_CLASS_NAME, None))
 
         data = data_handler.data
 
@@ -111,9 +103,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
         return entities
 
     async_add_entities(await get_entities(), True)
-
-    for data_class in temp_data_classes:
-        await data_handler.unregister_data_class(*data_class)
 
     platform = entity_platform.current_platform.get()
 
@@ -321,3 +310,4 @@ class NetatmoCamera(NetatmoBase, Camera):
                 person_id=person_id, home_id=self._home_id,
             )
             _LOGGER.info("Set home as empty")
+
