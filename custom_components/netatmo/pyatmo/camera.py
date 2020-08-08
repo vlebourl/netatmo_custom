@@ -172,7 +172,7 @@ class CameraData:
                     LOG.debug("Api error for camera url %s", url)
                     return None
                 else:
-                    return resp.get("local_url")
+                    return resp.get("local_url") if resp else None
 
             temp_local_url = check_url(vpn_url)
             if temp_local_url:
