@@ -1,4 +1,4 @@
-** /!\ This repo is no longer up to date with the core component.
+__/!\ This repo is no longer up to date with the core component.__
 
 # Netatmo component
 
